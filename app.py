@@ -17,7 +17,6 @@ from pathlib import Path
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
-# Mettez votre fichier .pth dans le même dossier que app.py sur HuggingFace
 MODEL_PATH = "ep0020_psnr30.13_ssim0.9295.pth"
 IMG_SIZE   = 1024
 BASE_CH    = 32
@@ -90,7 +89,7 @@ class DocumentDenoiser(nn.Module):
         return torch.clamp(x - self.head(d), -1., 1.)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHARGER LE MODÈLE (une seule fois au démarrage)
+# CHARGER LE MODÈLE
 # ─────────────────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL  = None
@@ -101,7 +100,6 @@ def charger():
     p = Path(MODEL_PATH)
     if not p.exists():
         print(f"⚠️  Modèle introuvable : {p}")
-        # Essayer d'autres chemins courants
         for alt in [f"models/{MODEL_PATH}", f"weights/{MODEL_PATH}"]:
             if Path(alt).exists():
                 p = Path(alt); break
@@ -139,33 +137,23 @@ TFM = transforms.Compose([
 ])
 
 def debruiter(image_input):
-    """
-    Entrée  : image PIL ou numpy array
-    Sortie  : image PIL débruitée
-    """
     if MODEL is None:
         return None, "❌ Modèle non chargé. Vérifiez que le .pth est dans le Space."
 
-    # Convertir en PIL si nécessaire
     if isinstance(image_input, np.ndarray):
         img_pil = Image.fromarray(image_input.astype(np.uint8)).convert("RGB")
     else:
         img_pil = image_input.convert("RGB")
 
-    # Dimensions originales (pour retourner à la même taille)
     w_orig, h_orig = img_pil.size
 
-    # Transformer et inférer
     x = TFM(img_pil).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         pred = MODEL(x)
 
-    # Dénormaliser
     out = (pred.squeeze(0) * 0.5 + 0.5).clamp(0, 1)
     out_np = (out.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
     result = Image.fromarray(out_np)
-
-    # Remettre à la taille originale
     result = result.resize((w_orig, h_orig), Image.LANCZOS)
 
     info = (f"✅ Débruitage terminé\n"
@@ -186,8 +174,7 @@ et obtenez la version nettoyée en couleur.
 
 **Modèle :** U-Net Résiduel avec ChannelAttention  
 **Performance :** PSNR = {INFO['psnr']:.2f} dB | SSIM = {INFO['ssim']:.4f}  
-**Types de bruits traités :** ombres colorées (rose/mauve/violet/marron/noir), 
-taches eau, taches œil, fissures graves, plis de papier
+**Types de bruits traités :** ombres colorées, taches, fissures, plis
 """
 
 with gr.Blocks(
@@ -219,7 +206,6 @@ with gr.Blocks(
                 lines=4,
             )
 
-    # ✅ CORRECTION GRADIO 5 : pas d'api_name
     btn.click(
         fn=debruiter,
         inputs=img_input,
@@ -233,6 +219,6 @@ if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,  # Sur Hugging Face, False est correct
+        share=False,
         show_error=True,
     )
