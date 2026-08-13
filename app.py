@@ -219,12 +219,6 @@ with gr.Blocks(
                 lines=4,
             )
 
-    # Exemples (optionnel — ajoutez vos images exemple)
-    # gr.Examples(
-    #     examples=[["exemple1.jpg"], ["exemple2.jpg"]],
-    #     inputs=img_input,
-    # )
-
     btn.click(
         fn=debruiter,
         inputs=img_input,
@@ -232,15 +226,13 @@ with gr.Blocks(
         api_name="debruiter",
     )
 
-    # API documentation
-    gr.Markdown("""
-    ---
-    ### 🔌 Utilisation API (Python)
-    ```python
-    from gradio_client import Client
-    client = Client("amirlahyani/smart-scanner-api")
-    result = client.predict(
-        image_input="chemin/vers/image.jpg",
-        api_name="/debruiter"
+# ─────────────────────────────────────────────────────────────────────────────
+# LANCEMENT
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        show_error=True,
     )
-    print(result)
