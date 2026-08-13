@@ -1,224 +1,595 @@
 """
-Smart Scanner API — Débruitage de documents U-Net
-HuggingFace Spaces + Gradio
-PSNR=30.13 dB | SSIM=0.9295 | Epoch 20
+Smart Scanner API
+Débruitage de documents avec U-Net résiduel
+
+PSNR = 30.13 dB
+SSIM = 0.9295
+Epoch = 20
 """
 
 import os
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from PIL import Image
-from torchvision import transforms
-import gradio as gr
 from pathlib import Path
 
-# ─────────────────────────────────────────────────────────────────────────────
+import numpy as np
+import torch
+
+import gradio as gr
+
+from PIL import Image
+from torchvision import transforms
+
+from model import DocumentDenoiser
+
+
+# ============================================================
 # CONFIGURATION
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================
+
 MODEL_PATH = "ep0020_psnr30.13_ssim0.9295.pth"
-IMG_SIZE   = 1024
-BASE_CH    = 32
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ARCHITECTURE (identique à l'entraînement)
-# ─────────────────────────────────────────────────────────────────────────────
-class ChannelAttention(nn.Module):
-    def __init__(self, ch, r=8):
-        super().__init__()
-        self.avg = nn.AdaptiveAvgPool2d(1)
-        self.fc  = nn.Sequential(
-            nn.Linear(ch, ch//r, bias=False), nn.ReLU(True),
-            nn.Linear(ch//r, ch, bias=False), nn.Sigmoid())
-    def forward(self, x):
-        return x * self.fc(self.avg(x).flatten(1)).view(x.shape[0],-1,1,1)
+IMG_SIZE = 1024
+BASE_CH = 32
 
-class ResBlock(nn.Module):
-    def __init__(self, ch):
-        super().__init__()
-        self.body = nn.Sequential(
-            nn.Conv2d(ch,ch,3,padding=1,bias=False), nn.BatchNorm2d(ch), nn.ReLU(True),
-            nn.Conv2d(ch,ch,3,padding=1,bias=False), nn.BatchNorm2d(ch))
-        self.ca = ChannelAttention(ch)
-    def forward(self, x): return x + self.ca(self.body(x))
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
 
-class EncBlock(nn.Module):
-    def __init__(self, ic, oc, nr=2):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(ic,oc,3,padding=1,bias=False), nn.BatchNorm2d(oc), nn.ReLU(True),
-            *[ResBlock(oc) for _ in range(nr)])
-        self.down = nn.Conv2d(oc,oc,2,stride=2,bias=False)
-    def forward(self, x):
-        s = self.conv(x); return self.down(s), s
 
-class DecBlock(nn.Module):
-    def __init__(self, ic, sc, oc, nr=2):
-        super().__init__()
-        self.up   = nn.ConvTranspose2d(ic,ic,2,stride=2,bias=False)
-        self.conv = nn.Sequential(
-            nn.Conv2d(ic+sc,oc,3,padding=1,bias=False), nn.BatchNorm2d(oc), nn.ReLU(True),
-            *[ResBlock(oc) for _ in range(nr)])
-    def forward(self, x, skip):
-        x = self.up(x)
-        if x.shape != skip.shape:
-            x = F.interpolate(x, size=skip.shape[2:],
-                              mode="bilinear", align_corners=False)
-        return self.conv(torch.cat([x, skip], 1))
+# ============================================================
+# INFORMATIONS MODÈLE
+# ============================================================
 
-class DocumentDenoiser(nn.Module):
-    def __init__(self, b=BASE_CH):
-        super().__init__()
-        self.e1 = EncBlock(3,b,2);    self.e2 = EncBlock(b,b*2,2)
-        self.e3 = EncBlock(b*2,b*4,3); self.e4 = EncBlock(b*4,b*8,3)
-        self.bn = nn.Sequential(
-            nn.Conv2d(b*8,b*16,3,padding=1,bias=False),
-            nn.BatchNorm2d(b*16), nn.ReLU(True),
-            ResBlock(b*16), ResBlock(b*16), ChannelAttention(b*16))
-        self.d4 = DecBlock(b*16,b*8,b*8,3); self.d3 = DecBlock(b*8,b*4,b*4,3)
-        self.d2 = DecBlock(b*4,b*2,b*2,2);  self.d1 = DecBlock(b*2,b,b,2)
-        self.head = nn.Conv2d(b,3,1,bias=True)
-        nn.init.zeros_(self.head.weight); nn.init.zeros_(self.head.bias)
+MODEL = None
 
-    def forward(self, x):
-        x1,s1 = self.e1(x); x2,s2 = self.e2(x1)
-        x3,s3 = self.e3(x2); x4,s4 = self.e4(x3)
-        b  = self.bn(x4)
-        d  = self.d1(self.d2(self.d3(self.d4(b,s4),s3),s2),s1)
-        return torch.clamp(x - self.head(d), -1., 1.)
+INFO = {
+    "epoch": 20,
+    "psnr": 30.13,
+    "ssim": 0.9295,
+}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CHARGER LE MODÈLE
-# ─────────────────────────────────────────────────────────────────────────────
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL  = None
-INFO   = {"epoch": 0, "psnr": 0.0, "ssim": 0.0}
 
-def charger():
-    global MODEL, INFO
-    p = Path(MODEL_PATH)
-    if not p.exists():
-        print(f"⚠️  Modèle introuvable : {p}")
-        for alt in [f"models/{MODEL_PATH}", f"weights/{MODEL_PATH}"]:
-            if Path(alt).exists():
-                p = Path(alt); break
-        else:
-            print("❌ Aucun checkpoint trouvé — vérifiez que le .pth est dans le Space")
-            return
+# ============================================================
+# TRANSFORMATIONS
+# ============================================================
 
-    state = torch.load(str(p), map_location=DEVICE, weights_only=False)
-    sd    = state.get("model_state", state.get("net", state))
-    if sd and next(iter(sd)).startswith("module."):
-        sd = {k[7:]: v for k, v in sd.items()}
-
-    MODEL = DocumentDenoiser().to(DEVICE)
-    try:
-        MODEL.load_state_dict(sd, strict=True)
-    except RuntimeError:
-        MODEL.load_state_dict(sd, strict=False)
-    MODEL.eval()
-
-    INFO["epoch"] = state.get("epoch", 20)
-    INFO["psnr"]  = state.get("psnr",  30.13)
-    INFO["ssim"]  = state.get("ssim",  0.9295)
-    print(f"✅ Modèle — Epoch {INFO['epoch']} | PSNR={INFO['psnr']:.2f}dB | {DEVICE}")
-
-charger()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FONCTION DE DÉBRUITAGE
-# ─────────────────────────────────────────────────────────────────────────────
 TFM = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE),
-                       interpolation=transforms.InterpolationMode.LANCZOS),
+    transforms.Resize(
+        (IMG_SIZE, IMG_SIZE),
+        interpolation=transforms.InterpolationMode.LANCZOS
+    ),
+
     transforms.ToTensor(),
-    transforms.Normalize([0.5]*3, [0.5]*3),
+
+    transforms.Normalize(
+        [0.5, 0.5, 0.5],
+        [0.5, 0.5, 0.5]
+    ),
 ])
 
-def debruiter(image_input):
-    if MODEL is None:
-        return None, "❌ Modèle non chargé. Vérifiez que le .pth est dans le Space."
 
-    if isinstance(image_input, np.ndarray):
-        img_pil = Image.fromarray(image_input.astype(np.uint8)).convert("RGB")
+# ============================================================
+# RECHERCHE DU CHECKPOINT
+# ============================================================
+
+def trouver_checkpoint():
+
+    candidates = [
+        Path(MODEL_PATH),
+
+        Path("models") / MODEL_PATH,
+
+        Path("weights") / MODEL_PATH,
+    ]
+
+    for path in candidates:
+
+        if path.is_file():
+
+            print(
+                f"✅ Checkpoint trouvé : {path}"
+            )
+
+            return path
+
+    print(
+        "❌ Checkpoint introuvable."
+    )
+
+    print(
+        "Fichiers recherchés :"
+    )
+
+    for path in candidates:
+        print(f"   - {path}")
+
+    return None
+
+
+# ============================================================
+# CHARGEMENT DU MODÈLE
+# ============================================================
+
+def charger_modele():
+
+    global MODEL
+    global INFO
+
+    checkpoint_path = trouver_checkpoint()
+
+    if checkpoint_path is None:
+
+        MODEL = None
+
+        return
+
+    print(
+        f"🔄 Chargement du modèle : "
+        f"{checkpoint_path}"
+    )
+
+    try:
+
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=DEVICE,
+            weights_only=False
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Erreur lors du chargement : {e}"
+        )
+
+        MODEL = None
+
+        return
+
+
+    # --------------------------------------------------------
+    # Récupération du state_dict
+    # --------------------------------------------------------
+
+    if isinstance(checkpoint, dict):
+
+        if "model_state" in checkpoint:
+
+            state_dict = checkpoint["model_state"]
+
+        elif "state_dict" in checkpoint:
+
+            state_dict = checkpoint["state_dict"]
+
+        elif "net" in checkpoint:
+
+            state_dict = checkpoint["net"]
+
+        else:
+
+            state_dict = checkpoint
+
     else:
+
+        state_dict = checkpoint
+
+
+    # --------------------------------------------------------
+    # Suppression éventuelle du préfixe DataParallel
+    # --------------------------------------------------------
+
+    if isinstance(state_dict, dict):
+
+        cleaned_state_dict = {}
+
+        for key, value in state_dict.items():
+
+            if key.startswith("module."):
+
+                key = key[7:]
+
+            cleaned_state_dict[key] = value
+
+        state_dict = cleaned_state_dict
+
+
+    # --------------------------------------------------------
+    # Création du modèle
+    # --------------------------------------------------------
+
+    model = DocumentDenoiser(
+        base_ch=BASE_CH
+    )
+
+
+    # --------------------------------------------------------
+    # CHARGEMENT STRICT
+    # --------------------------------------------------------
+
+    try:
+
+        result = model.load_state_dict(
+            state_dict,
+            strict=True
+        )
+
+    except RuntimeError as e:
+
+        print(
+            "❌ ERREUR : le checkpoint ne correspond "
+            "pas exactement à l'architecture."
+        )
+
+        print(e)
+
+        MODEL = None
+
+        return
+
+
+    # --------------------------------------------------------
+    # Vérification
+    # --------------------------------------------------------
+
+    print(
+        f"✅ Poids chargés correctement : "
+        f"{len(state_dict)} tenseurs"
+    )
+
+    print(
+        f"✅ Missing keys : {len(result.missing_keys)}"
+    )
+
+    print(
+        f"✅ Unexpected keys : "
+        f"{len(result.unexpected_keys)}"
+    )
+
+
+    # --------------------------------------------------------
+    # Informations checkpoint
+    # --------------------------------------------------------
+
+    if isinstance(checkpoint, dict):
+
+        INFO["epoch"] = checkpoint.get(
+            "epoch",
+            20
+        )
+
+        INFO["psnr"] = checkpoint.get(
+            "psnr",
+            30.13
+        )
+
+        INFO["ssim"] = checkpoint.get(
+            "ssim",
+            0.9295
+        )
+
+
+    # --------------------------------------------------------
+    # Device
+    # --------------------------------------------------------
+
+    model = model.to(DEVICE)
+
+    model.eval()
+
+    MODEL = model
+
+
+    print(
+        f"✅ Modèle chargé"
+    )
+
+    print(
+        f"   Epoch : {INFO['epoch']}"
+    )
+
+    print(
+        f"   PSNR  : {INFO['psnr']:.2f} dB"
+    )
+
+    print(
+        f"   SSIM  : {INFO['ssim']:.4f}"
+    )
+
+    print(
+        f"   Device: {DEVICE}"
+    )
+
+
+# ============================================================
+# CHARGEMENT AU DÉMARRAGE
+# ============================================================
+
+charger_modele()
+
+
+# ============================================================
+# DÉBRUITAGE
+# ============================================================
+
+def debruiter(image_input):
+
+    if MODEL is None:
+
+        return (
+            None,
+            "❌ Modèle non chargé.\n"
+            "Vérifiez la présence du fichier .pth."
+        )
+
+
+    if image_input is None:
+
+        return (
+            None,
+            "⚠️ Veuillez sélectionner une image."
+        )
+
+
+    # --------------------------------------------------------
+    # Conversion en PIL
+    # --------------------------------------------------------
+
+    if isinstance(image_input, Image.Image):
+
         img_pil = image_input.convert("RGB")
 
-    w_orig, h_orig = img_pil.size
+    elif isinstance(image_input, np.ndarray):
 
-    x = TFM(img_pil).unsqueeze(0).to(DEVICE)
-    with torch.no_grad():
-        pred = MODEL(x)
+        if image_input.dtype != np.uint8:
 
-    out = (pred.squeeze(0) * 0.5 + 0.5).clamp(0, 1)
-    out_np = (out.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
-    result = Image.fromarray(out_np)
-    result = result.resize((w_orig, h_orig), Image.LANCZOS)
+            image_input = np.clip(
+                image_input,
+                0,
+                255
+            ).astype(np.uint8)
 
-    info = (f"✅ Débruitage terminé\n"
-            f"Modèle : Epoch {INFO['epoch']} | "
-            f"PSNR={INFO['psnr']:.2f} dB | SSIM={INFO['ssim']:.4f}\n"
-            f"Taille : {w_orig}×{h_orig} px")
+        img_pil = Image.fromarray(
+            image_input
+        ).convert("RGB")
+
+    else:
+
+        return (
+            None,
+            "❌ Format d'image non supporté."
+        )
+
+
+    # --------------------------------------------------------
+    # Dimensions originales
+    # --------------------------------------------------------
+
+    original_width, original_height = (
+        img_pil.size
+    )
+
+
+    # --------------------------------------------------------
+    # Préparation
+    # --------------------------------------------------------
+
+    x = TFM(
+        img_pil
+    ).unsqueeze(0).to(DEVICE)
+
+
+    # --------------------------------------------------------
+    # Inférence
+    # --------------------------------------------------------
+
+    try:
+
+        with torch.inference_mode():
+
+            prediction = MODEL(x)
+
+    except Exception as e:
+
+        print(
+            f"❌ Erreur pendant l'inférence : {e}"
+        )
+
+        return (
+            None,
+            f"❌ Erreur pendant le débruitage :\n{e}"
+        )
+
+
+    # --------------------------------------------------------
+    # Retour dans [0, 1]
+    # --------------------------------------------------------
+
+    output = (
+        prediction.squeeze(0)
+        .cpu()
+        .clamp(-1.0, 1.0)
+    )
+
+    output = (
+        output * 0.5
+        + 0.5
+    )
+
+    output_np = (
+        output
+        .permute(1, 2, 0)
+        .numpy()
+    )
+
+    output_np = (
+        output_np * 255.0
+    ).round().astype(np.uint8)
+
+
+    # --------------------------------------------------------
+    # PIL
+    # --------------------------------------------------------
+
+    result = Image.fromarray(
+        output_np,
+        mode="RGB"
+    )
+
+
+    # --------------------------------------------------------
+    # Retour à la taille originale
+    # --------------------------------------------------------
+
+    result = result.resize(
+        (
+            original_width,
+            original_height
+        ),
+        Image.Resampling.LANCZOS
+    )
+
+
+    # --------------------------------------------------------
+    # Informations
+    # --------------------------------------------------------
+
+    info = (
+        "✅ Débruitage terminé\n\n"
+        f"Modèle : Epoch {INFO['epoch']}\n"
+        f"PSNR : {INFO['psnr']:.2f} dB\n"
+        f"SSIM : {INFO['ssim']:.4f}\n"
+        f"Device : {DEVICE}\n"
+        f"Taille : "
+        f"{original_width} × "
+        f"{original_height} px"
+    )
+
 
     return result, info
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INTERFACE GRADIO
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ============================================================
+# INTERFACE
+# ============================================================
+
 description_md = f"""
-## 📄 Smart Scanner API — Débruitage de Documents
+# 📄 Smart Scanner API
 
-Uploadez un document bruité (ombres, plis, taches, fissures) 
-et obtenez la version nettoyée en couleur.
+### Débruitage intelligent de documents
 
-**Modèle :** U-Net Résiduel avec ChannelAttention  
-**Performance :** PSNR = {INFO['psnr']:.2f} dB | SSIM = {INFO['ssim']:.4f}  
-**Types de bruits traités :** ombres colorées, taches, fissures, plis
+Chargez une image de document contenant :
+
+- ombres
+- taches
+- plis
+- fissures
+- bruit visuel
+
+Le modèle produit automatiquement une version nettoyée.
+
+---
+
+### 🧠 Modèle
+
+**U-Net résiduel + Channel Attention**
+
+**Performance du checkpoint :**
+
+- **PSNR : {INFO['psnr']:.2f} dB**
+- **SSIM : {INFO['ssim']:.4f}**
+- **Epoch : {INFO['epoch']}**
+
+---
 """
+
+
+# ============================================================
+# GRADIO
+# ============================================================
 
 with gr.Blocks(
     title="Smart Scanner API",
-    theme=gr.themes.Soft(primary_hue="blue"),
-    css=".gradio-container {max-width: 1200px; margin: auto;}"
+    theme=gr.themes.Soft(
+        primary_hue="blue"
+    ),
+    css="""
+    .gradio-container {
+        max-width: 1200px !important;
+        margin: auto !important;
+    }
+    """
 ) as demo:
 
-    gr.Markdown(description_md)
+    gr.Markdown(
+        description_md
+    )
+
 
     with gr.Row():
-        with gr.Column(scale=1):
-            img_input = gr.Image(
-                label="📸 Image bruitée (entrée)",
-                type="pil",
-                height=500,
-            )
-            btn = gr.Button("🚀 Débruiter", variant="primary", size="lg")
 
-        with gr.Column(scale=1):
-            img_output = gr.Image(
-                label="✨ Image débruitée (sortie)",
+        # ----------------------------------------------------
+        # INPUT
+        # ----------------------------------------------------
+
+        with gr.Column(
+            scale=1
+        ):
+
+            img_input = gr.Image(
+                label="📸 Document original",
                 type="pil",
-                height=500,
+                height=500
             )
+
+            btn = gr.Button(
+                "🚀 Débruiter",
+                variant="primary",
+                size="lg"
+            )
+
+
+        # ----------------------------------------------------
+        # OUTPUT
+        # ----------------------------------------------------
+
+        with gr.Column(
+            scale=1
+        ):
+
+            img_output = gr.Image(
+                label="✨ Document débruité",
+                type="pil",
+                height=500
+            )
+
             info_box = gr.Textbox(
                 label="ℹ️ Informations",
                 interactive=False,
-                lines=4,
+                lines=7
             )
+
+
+    # --------------------------------------------------------
+    # EVENT
+    # --------------------------------------------------------
 
     btn.click(
         fn=debruiter,
         inputs=img_input,
-        outputs=[img_output, info_box],
+        outputs=[
+            img_output,
+            info_box
+        ],
+        api_name="debruiter"
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LANCEMENT
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ============================================================
+# LANCEMENT HUGGING FACE SPACES
+# ============================================================
+
 if __name__ == "__main__":
+
     demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
         show_error=True,
+        show_api=False
     )
