@@ -219,11 +219,11 @@ with gr.Blocks(
                 lines=4,
             )
 
+    # ✅ CORRECTION GRADIO 5 : pas d'api_name
     btn.click(
         fn=debruiter,
         inputs=img_input,
         outputs=[img_output, info_box],
-        api_name="debruiter",
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +233,6 @@ if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
+        share=False,  # Sur Hugging Face, False est correct
         show_error=True,
     )
