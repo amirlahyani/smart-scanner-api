@@ -11,7 +11,6 @@ python_version: "3.10"
 ---
 
 # Smart Scanner API
-
 API de débruitage de documents basée sur un U-Net résiduel avec Channel Attention.
 
 **Performance :**
@@ -19,9 +18,8 @@ API de débruitage de documents basée sur un U-Net résiduel avec Channel Atten
 - SSIM : 0.9295
 - Entraînement : Epoch 20
 
-Le modèle permet de réduire différents types de dégradations présentes sur les documents :
-- ombres
-- taches
-- fissures
-- plis
-- bruit visuel
+Le modèle réduit :
+- ombres noires, marron, violet, mauve, rose
+- taches d'eau et d'huile
+- fissures graves
+- luminosité forte
