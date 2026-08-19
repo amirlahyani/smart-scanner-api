@@ -100,7 +100,7 @@ with gr.Blocks(title="Smart Scanner API") as demo:
             img_out = gr.Image(label="✨ Document nettoyé", type="pil", height=480)
             info = gr.Textbox(label="ℹ️ Informations", lines=3, interactive=False)
 
-    # ✅ SUPPRIMER api_name pour éviter l'erreur
+    # ✅ SUPPRIMER api_name
     btn.click(
         fn=debruiter,
         inputs=img_in,
@@ -116,6 +116,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=7860,
         share=False,
-        prevent_thread_lock=True,  # ✅ AJOUTÉ
-        enable_api=False,          # ✅ AJOUTÉ
+        prevent_thread_lock=True,  # ✅ SEUL AJOUT NÉCESSAIRE
     )
