@@ -137,3 +137,4 @@ with gr.Blocks(
 from gradio_client import Client
 client = Client("amirlahyani/smart-scanner-api")
 result = client.predict(image_input="photo.jpg", api_name="/debruiter")
+print(result)
