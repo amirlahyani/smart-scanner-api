@@ -1,9 +1,3 @@
-
----
-
-## 📄 **3. README.md (CORRIGÉ)**
-
-```md
 ---
 title: Smart Scanner API
 emoji: 📄
