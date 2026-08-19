@@ -3,7 +3,6 @@ Smart Scanner API — HuggingFace Spaces
 Débruitage de documents U-Net | PSNR=30.13dB | SSIM=0.9295
 """
 
-import spaces
 import torch
 import numpy as np
 from PIL import Image
@@ -60,9 +59,8 @@ TFM = transforms.Compose([
 ])
 
 # ─────────────────────────────────────────────────────────────
-# INFÉRENCE
+# INFÉRENCE (sans @spaces.GPU)
 # ─────────────────────────────────────────────────────────────
-@spaces.GPU
 def debruiter(image_input):
     if image_input is None:
         return None, "⚠️ Aucune image fournie"
@@ -74,11 +72,11 @@ def debruiter(image_input):
 
     w_orig, h_orig = img_pil.size
 
-    model_gpu = MODEL.to(DEVICE)
+    model = MODEL.to(DEVICE)
     x = TFM(img_pil).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
-        pred = model_gpu(x)
+        pred = model(x)
 
     out = (pred.squeeze(0) * 0.5 + 0.5).clamp(0, 1)
     out_np = (out.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
@@ -88,7 +86,7 @@ def debruiter(image_input):
     return result, info
 
 # ─────────────────────────────────────────────────────────────
-# INTERFACE GRADIO SIMPLIFIÉE
+# INTERFACE GRADIO
 # ─────────────────────────────────────────────────────────────
 with gr.Blocks(title="Smart Scanner API") as demo:
     gr.Markdown("# 📄 Smart Scanner — Débruitage de Documents")
