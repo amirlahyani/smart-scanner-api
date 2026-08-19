@@ -59,7 +59,7 @@ TFM = transforms.Compose([
 ])
 
 # ─────────────────────────────────────────────────────────────
-# INFÉRENCE (sans @spaces.GPU)
+# INFÉRENCE
 # ─────────────────────────────────────────────────────────────
 def debruiter(image_input):
     if image_input is None:
@@ -100,10 +100,22 @@ with gr.Blocks(title="Smart Scanner API") as demo:
             img_out = gr.Image(label="✨ Document nettoyé", type="pil", height=480)
             info = gr.Textbox(label="ℹ️ Informations", lines=3, interactive=False)
 
-    btn.click(fn=debruiter, inputs=img_in, outputs=[img_out, info], api_name="debruiter")
+    # ✅ SUPPRIMER api_name pour éviter l'erreur
+    btn.click(
+        fn=debruiter,
+        inputs=img_in,
+        outputs=[img_out, info],
+        # api_name="debruiter",  # ← SUPPRIMÉ
+    )
 
 # ─────────────────────────────────────────────────────────────
 # LANCEMENT
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        prevent_thread_lock=True,  # ✅ AJOUTÉ
+        enable_api=False,          # ✅ AJOUTÉ
+    )
