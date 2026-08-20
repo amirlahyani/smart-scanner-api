@@ -1,8 +1,7 @@
-flask==2.3.3
-flask-cors==4.0.0
+gradio>=4.0.0
 opencv-python-headless>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
-torch
-torchvision
-python-multipart==0.0.6
+torch==2.8.0
+torchvision==0.19.0
+huggingface-hub==0.25.0

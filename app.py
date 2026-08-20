@@ -1,81 +1,113 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import base64
-import cv2
+
+### 1.3. Créer `app.py` pour Hugging Face Spaces (Gradio)
+
+```python
+"""
+Smart Scanner API — Hugging Face Spaces
+Débruitage de documents U-Net | PSNR=30.13dB | SSIM=0.9295
+"""
+
+import torch
 import numpy as np
 from PIL import Image
-import io
-import torch
 from torchvision import transforms
-import os
+import gradio as gr
 from model import DocumentDenoiser
+import os
+from pathlib import Path
 
-app = Flask(__name__)
-CORS(app)
+# ─────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────────────────────
+MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"
+IMG_SIZE  = 1024
+BASE_CH   = 32
+DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Charger le modèle
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = "ep0020_psnr30.13_ssim0.9295.pth"
+# ─────────────────────────────────────────────────────────────
+# CHARGER LE MODÈLE
+# ─────────────────────────────────────────────────────────────
+def charger_modele():
+    p = Path(MODEL_PTH)
+    if not p.exists():
+        raise FileNotFoundError(f"❌ Fichier introuvable : {MODEL_PTH}")
 
-if os.path.exists(MODEL_PATH):
-    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
-    model = DocumentDenoiser(base_ch=32).to(DEVICE)
-    state_dict = checkpoint.get("model_state", checkpoint)
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(state_dict, strict=True)
+    state = torch.load(str(p), map_location="cpu", weights_only=False)
+    sd = state.get("model_state", state.get("net", state))
+    if sd and next(iter(sd)).startswith("module."):
+        sd = {k[7:]: v for k, v in sd.items()}
+
+    model = DocumentDenoiser(base_ch=BASE_CH)
+    try:
+        model.load_state_dict(sd, strict=True)
+    except RuntimeError:
+        model.load_state_dict(sd, strict=False)
+
     model.eval()
-    print("✅ Modèle chargé avec succès")
-else:
-    model = None
-    print("❌ Modèle non trouvé")
 
-to_tensor = transforms.Compose([
+    ep   = state.get("epoch", 20)
+    psnr = state.get("psnr",  30.13)
+    ssim = state.get("ssim",  0.9295)
+    print(f"✅ Modèle chargé — Epoch {ep} | PSNR={psnr:.2f}dB | SSIM={ssim:.4f}")
+    return model, ep, psnr, ssim
+
+MODEL, EPOCH, PSNR_V, SSIM_V = charger_modele()
+
+# ─────────────────────────────────────────────────────────────
+# TRANSFORM
+# ─────────────────────────────────────────────────────────────
+TFM = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE), interpolation=transforms.InterpolationMode.LANCZOS),
     transforms.ToTensor(),
-    transforms.Normalize([0.5]*3, [0.5]*3)
+    transforms.Normalize([0.5]*3, [0.5]*3),
 ])
 
-def denorm(t):
-    return (t.float() * 0.5 + 0.5).clamp(0, 1)
+# ─────────────────────────────────────────────────────────────
+# INFÉRENCE
+# ─────────────────────────────────────────────────────────────
+def debruiter(image_input):
+    if image_input is None:
+        return None, "⚠️ Aucune image fournie"
 
-@app.route("/", methods=["GET"])
-def root():
-    return jsonify({"status": "running", "model_loaded": model is not None})
+    if isinstance(image_input, np.ndarray):
+        img_pil = Image.fromarray(image_input.astype(np.uint8)).convert("RGB")
+    else:
+        img_pil = image_input.convert("RGB")
 
-@app.route("/full-process", methods=["POST"])
-def full_process():
-    try:
-        file = request.files["file"]
-        contents = file.read()
-        pil_img = Image.open(io.BytesIO(contents)).convert("RGB")
-        
-        if model is not None:
-            w_orig, h_orig = pil_img.size
-            img_1024 = pil_img.resize((1024, 1024), Image.LANCZOS)
-            t = to_tensor(img_1024).unsqueeze(0).to(DEVICE)
-            with torch.no_grad():
-                out = model(t)
-            result = denorm(out.squeeze(0).cpu())
-            pil_result = transforms.ToPILImage()(result)
-            pil_result = pil_result.resize((w_orig, h_orig), Image.LANCZOS)
-        else:
-            pil_result = pil_img
-        
-        image_np = np.array(pil_result)
-        image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-        _, buf = cv2.imencode(".png", image_bgr)
-        b64 = base64.b64encode(buf).decode()
-        
-        return jsonify({
-            "success": True,
-            "enhanced_image": b64,
-            "analysis": {
-                "model_epoch": "20",
-                "model_psnr": "30.13 dB",
-                "model_ssim": "0.9295"
-            }
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    w_orig, h_orig = img_pil.size
 
+    model = MODEL.to(DEVICE)
+    x = TFM(img_pil).unsqueeze(0).to(DEVICE)
+
+    with torch.no_grad():
+        pred = model(x)
+
+    out = (pred.squeeze(0) * 0.5 + 0.5).clamp(0, 1)
+    out_np = (out.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+    result = Image.fromarray(out_np).resize((w_orig, h_orig), Image.LANCZOS)
+
+    info = f"✅ Débruitage terminé | Epoch {EPOCH} | PSNR={PSNR_V:.2f} dB | SSIM={SSIM_V:.4f}"
+    return result, info
+
+# ─────────────────────────────────────────────────────────────
+# INTERFACE GRADIO
+# ─────────────────────────────────────────────────────────────
+with gr.Blocks(title="Smart Scanner API") as demo:
+    gr.Markdown("# 📄 Smart Scanner — Débruitage de Documents")
+    gr.Markdown(f"**Modèle :** U-Net Résiduel | Epoch {EPOCH} | PSNR **{PSNR_V:.2f} dB** | SSIM **{SSIM_V:.4f}**")
+
+    with gr.Row():
+        with gr.Column():
+            img_in = gr.Image(label="📸 Document bruité", type="pil", height=480)
+            btn = gr.Button("🚀 Débruiter", variant="primary", size="lg")
+        with gr.Column():
+            img_out = gr.Image(label="✨ Document nettoyé", type="pil", height=480)
+            info = gr.Textbox(label="ℹ️ Informations", lines=3, interactive=False)
+
+    btn.click(fn=debruiter, inputs=img_in, outputs=[img_out, info])
+
+# ─────────────────────────────────────────────────────────────
+# LANCEMENT
+# ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    demo.launch()
