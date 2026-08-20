@@ -14,6 +14,60 @@ from fastapi.middleware.cors import CORSMiddleware
 import base64
 import io
 import uvicorn
+import requests
+
+# ── TÉLÉCHARGER LE MODÈLE DEPUIS GITHUB ──────────────────
+MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"
+
+def download_model():
+    """Télécharge le modèle depuis GitHub si absent ou corrompu"""
+    if os.path.exists(MODEL_PTH):
+        # Vérifier la taille (98.8 MB)
+        size = os.path.getsize(MODEL_PTH)
+        if size > 90000000:  # 90 MB
+            print(f"✅ Modèle déjà présent ({size/1024/1024:.1f} MB)")
+            return
+    
+    print("📥 Téléchargement du modèle depuis GitHub...")
+    url = "https://raw.githubusercontent.com/amirlahyani/smart-scanner-api/main/ep0020_psnr30.13_ssim0.9295.pth"
+    
+    try:
+        response = requests.get(url, stream=True, timeout=120)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        with open(MODEL_PTH, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    # Afficher la progression
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        if int(percent) % 10 == 0:
+                            print(f"   Téléchargement: {percent:.0f}%")
+        
+        print(f"✅ Modèle téléchargé ({os.path.getsize(MODEL_PTH)/1024/1024:.1f} MB)")
+    except Exception as e:
+        print(f"❌ Erreur téléchargement: {e}")
+        # Fallback: essayer avec un autre lien
+        try:
+            print("🔄 Tentative avec un autre lien...")
+            url2 = "https://huggingface.co/spaces/mohamedamirlehyani/smart-scanner-api/resolve/main/ep0020_psnr30.13_ssim0.9295.pth"
+            response = requests.get(url2, stream=True, timeout=120)
+            response.raise_for_status()
+            with open(MODEL_PTH, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            print(f"✅ Modèle téléchargé ({os.path.getsize(MODEL_PTH)/1024/1024:.1f} MB)")
+        except Exception as e2:
+            print(f"❌ Erreur: {e2}")
+
+# Télécharger le modèle au démarrage
+download_model()
 
 # ── Importer le modèle ──────────────────────────────────────
 class ChannelAttention(torch.nn.Module):
@@ -115,7 +169,6 @@ class DocumentDenoiser(torch.nn.Module):
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
-MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"
 IMG_SIZE = 1024
 BASE_CH = 32
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -129,24 +182,28 @@ def charger_modele():
         print(f"❌ Modèle introuvable : {MODEL_PTH}")
         return None, 0, 0, 0
 
-    state = torch.load(str(p), map_location="cpu", weights_only=False)
-    sd = state.get("model_state", state.get("net", state))
-    if sd and next(iter(sd)).startswith("module."):
-        sd = {k[7:]: v for k, v in sd.items()}
-
-    model = DocumentDenoiser(base_ch=BASE_CH)
     try:
-        model.load_state_dict(sd, strict=True)
-    except RuntimeError:
-        model.load_state_dict(sd, strict=False)
+        state = torch.load(str(p), map_location="cpu", weights_only=False)
+        sd = state.get("model_state", state.get("net", state))
+        if sd and next(iter(sd)).startswith("module."):
+            sd = {k[7:]: v for k, v in sd.items()}
 
-    model.eval()
+        model = DocumentDenoiser(base_ch=BASE_CH)
+        try:
+            model.load_state_dict(sd, strict=True)
+        except RuntimeError:
+            model.load_state_dict(sd, strict=False)
 
-    ep = state.get("epoch", 20)
-    psnr = state.get("psnr", 30.13)
-    ssim = state.get("ssim", 0.9295)
-    print(f"✅ Modèle chargé — Epoch {ep} | PSNR={psnr:.2f}dB | SSIM={ssim:.4f}")
-    return model, ep, psnr, ssim
+        model.eval()
+
+        ep = state.get("epoch", 20)
+        psnr = state.get("psnr", 30.13)
+        ssim = state.get("ssim", 0.9295)
+        print(f"✅ Modèle chargé — Epoch {ep} | PSNR={psnr:.2f}dB | SSIM={ssim:.4f}")
+        return model, ep, psnr, ssim
+    except Exception as e:
+        print(f"❌ Erreur chargement: {e}")
+        return None, 0, 0, 0
 
 MODEL, EPOCH, PSNR_V, SSIM_V = charger_modele()
 
@@ -215,7 +272,6 @@ async def full_process(file: UploadFile = File(...)):
         if result is None:
             return {"success": False, "error": info}
 
-        # Convertir en base64
         buffered = io.BytesIO()
         result.save(buffered, format="PNG")
         img_str = base64.b64encode(buffered.getvalue()).decode()
