@@ -6,3 +6,4 @@ torchvision
 numpy
 opencv-python-headless
 requests
+python-multipart
