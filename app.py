@@ -35,17 +35,16 @@ logger.info("===== Application Startup at {} =====".format(
 # ─────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────
-MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"  # ✅ VOTRE NOM DE FICHIER
-GOOGLE_DRIVE_ID = "1EDzgmyQuYzC7VbbSCHyb0zT0wP0Bl1Jz"  # ✅ VOTRE ID
+MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"
 BASE_CH = 32
 device = torch.device("cpu")
 logger.info("Device : {}".format(device))
 
 # ─────────────────────────────────────────────────────────────
-#  TÉLÉCHARGER LE MODÈLE DEPUIS GOOGLE DRIVE
+#  TÉLÉCHARGER LE MODÈLE DEPUIS DROPBOX
 # ─────────────────────────────────────────────────────────────
 def download_model():
-    """Télécharge le modèle depuis Google Drive"""
+    """Télécharge le modèle depuis Dropbox"""
     if os.path.exists(MODEL_PTH):
         size = os.path.getsize(MODEL_PTH)
         if size > 80000000:  # 80 MB
@@ -55,22 +54,13 @@ def download_model():
             logger.warning(f"⚠️ Fichier corrompu ({size/1024/1024:.1f} MB), re-téléchargement...")
             os.remove(MODEL_PTH)
 
-    logger.info("📥 Téléchargement du modèle depuis Google Drive...")
-
-    url = f"https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_ID}"
+    logger.info("📥 Téléchargement du modèle depuis Dropbox...")
+    
+    # ✅ LIEN DROPBOX MODIFIÉ (dl=1 pour téléchargement direct)
+    url = "https://www.dropbox.com/scl/fi/rzwi5lyltghi4qzuuhzvm/ep0020_psnr30.13_ssim0.9295.pth?dl=1"
 
     try:
-        response = requests.get(url, stream=True, timeout=300)
-
-        # Gérer la confirmation Google Drive
-        if "confirm" in response.text and "download_warning" in response.url:
-            logger.info("   🔄 Confirmation Google Drive...")
-            confirm_match = re.search(r'confirm=([^&]+)', response.text)
-            if confirm_match:
-                confirm_token = confirm_match.group(1)
-                url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={GOOGLE_DRIVE_ID}"
-                response = requests.get(url, stream=True, timeout=300)
-
+        response = requests.get(url, stream=True, timeout=600)
         response.raise_for_status()
 
         total_size = int(response.headers.get('content-length', 0))
