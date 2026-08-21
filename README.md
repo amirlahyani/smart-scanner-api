@@ -1,26 +1,23 @@
----
-title: Smart Scanner API
-emoji: 📄
-colorFrom: blue
-colorTo: green
-sdk: gradio
-sdk_version: "4.44.1"
-app_file: app.py
-pinned: false
-python_version: "3.10"
----
+FROM python:3.10-slim
 
-# Smart Scanner API
+# Installer Git LFS et dépendances système
+RUN apt-get update && \
+    apt-get install -y git git-lfs && \
+    git lfs install && \
+    rm -rf /var/lib/apt/lists/*
 
-API de débruitage de documents avec U-Net (PSNR 30.13 dB, SSIM 0.9295)
+WORKDIR /app
 
-## Performance
-- PSNR : 30.13 dB
-- SSIM : 0.9295
-- Epoch : 20
+# Copier et installer les dépendances
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-## Utilisation
-```python
-from gradio_client import Client
-client = Client("mohamedamirlehyani/smart-scanner-api")
-result = client.predict(image_input="photo.jpg", api_name="/debruiter")
+# Copier tous les fichiers (y compris best_model.pth via LFS)
+COPY . .
+
+# Port exposé (Railway utilise la variable PORT)
+EXPOSE 8000
+
+# Lancement avec PORT dynamique
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
