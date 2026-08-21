@@ -41,10 +41,10 @@ device = torch.device("cpu")
 logger.info("Device : {}".format(device))
 
 # ─────────────────────────────────────────────────────────────
-#  TÉLÉCHARGER LE MODÈLE DEPUIS DROPBOX
+#  TÉLÉCHARGER LE MODÈLE DEPUIS HUGGING FACE
 # ─────────────────────────────────────────────────────────────
 def download_model():
-    """Télécharge le modèle depuis Dropbox"""
+    """Télécharge le modèle depuis Hugging Face"""
     if os.path.exists(MODEL_PTH):
         size = os.path.getsize(MODEL_PTH)
         if size > 80000000:  # 80 MB
@@ -54,10 +54,10 @@ def download_model():
             logger.warning(f"⚠️ Fichier corrompu ({size/1024/1024:.1f} MB), re-téléchargement...")
             os.remove(MODEL_PTH)
 
-    logger.info("📥 Téléchargement du modèle depuis Dropbox...")
+    logger.info("📥 Téléchargement du modèle depuis Hugging Face...")
     
-    # ✅ LIEN DROPBOX MODIFIÉ (dl=1 pour téléchargement direct)
-    url = "https://www.dropbox.com/scl/fi/rzwi5lyltghi4qzuuhzvm/ep0020_psnr30.13_ssim0.9295.pth?dl=1"
+    # ✅ LIEN HUGGING FACE
+    url = "https://huggingface.co/mohamedamirlehyani/smart-scanner-model/resolve/main/ep0020_psnr30.13_ssim0.9295.pth"
 
     try:
         response = requests.get(url, stream=True, timeout=600)
