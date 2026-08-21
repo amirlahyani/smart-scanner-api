@@ -15,61 +15,70 @@ import base64
 import io
 import uvicorn
 import requests
+import time
 
-# ── TÉLÉCHARGER LE MODÈLE DEPUIS GITHUB ──────────────────
+# ── TÉLÉCHARGER LE MODÈLE ──────────────────────────────────
 MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"
 
 def download_model():
-    """Télécharge le modèle depuis GitHub si absent ou corrompu"""
+    """Télécharge le modèle depuis Hugging Face (plus fiable que GitHub)"""
     if os.path.exists(MODEL_PTH):
-        # Vérifier la taille (98.8 MB)
         size = os.path.getsize(MODEL_PTH)
-        if size > 90000000:  # 90 MB
+        if size > 80000000:  # 80 MB
             print(f"✅ Modèle déjà présent ({size/1024/1024:.1f} MB)")
             return
+        else:
+            print(f"⚠️ Fichier corrompu ({size/1024/1024:.1f} MB), re-téléchargement...")
+            os.remove(MODEL_PTH)
     
-    print("📥 Téléchargement du modèle depuis GitHub...")
-    url = "https://raw.githubusercontent.com/amirlahyani/smart-scanner-api/main/ep0020_psnr30.13_ssim0.9295.pth"
+    print("📥 Téléchargement du modèle depuis Hugging Face...")
     
-    try:
-        response = requests.get(url, stream=True, timeout=120)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-        
-        with open(MODEL_PTH, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    # Afficher la progression
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        if int(percent) % 10 == 0:
-                            print(f"   Téléchargement: {percent:.0f}%")
-        
-        print(f"✅ Modèle téléchargé ({os.path.getsize(MODEL_PTH)/1024/1024:.1f} MB)")
-    except Exception as e:
-        print(f"❌ Erreur téléchargement: {e}")
-        # Fallback: essayer avec un autre lien
+    # ✅ Utiliser Hugging Face (plus fiable que GitHub LFS)
+    urls = [
+        "https://huggingface.co/mohamedamirlehyani/smart-scanner-api/resolve/main/ep0020_psnr30.13_ssim0.9295.pth",
+        "https://raw.githubusercontent.com/amirlahyani/smart-scanner-api/main/ep0020_psnr30.13_ssim0.9295.pth"
+    ]
+    
+    for url in urls:
         try:
-            print("🔄 Tentative avec un autre lien...")
-            url2 = "https://huggingface.co/spaces/mohamedamirlehyani/smart-scanner-api/resolve/main/ep0020_psnr30.13_ssim0.9295.pth"
-            response = requests.get(url2, stream=True, timeout=120)
+            print(f"   Tentative: {url[:50]}...")
+            response = requests.get(url, stream=True, timeout=300)
             response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            if total_size < 80000000:  # Moins de 80 MB
+                print(f"   ⚠️ Taille suspecte: {total_size/1024/1024:.1f} MB")
+                continue
+            
+            downloaded = 0
             with open(MODEL_PTH, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-            print(f"✅ Modèle téléchargé ({os.path.getsize(MODEL_PTH)/1024/1024:.1f} MB)")
-        except Exception as e2:
-            print(f"❌ Erreur: {e2}")
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            if int(percent) % 10 == 0:
+                                print(f"   Téléchargement: {percent:.0f}%")
+            
+            size_mb = os.path.getsize(MODEL_PTH) / 1024 / 1024
+            if size_mb > 80:
+                print(f"✅ Modèle téléchargé ({size_mb:.1f} MB)")
+                return
+            else:
+                print(f"❌ Fichier trop petit ({size_mb:.1f} MB)")
+                os.remove(MODEL_PTH)
+                
+        except Exception as e:
+            print(f"   ❌ Erreur: {e}")
+            continue
+    
+    print("❌ Échec du téléchargement du modèle")
 
 # Télécharger le modèle au démarrage
 download_model()
 
-# ── Importer le modèle ──────────────────────────────────────
+# ── Architecture U-Net ──────────────────────────────────────
 class ChannelAttention(torch.nn.Module):
     def __init__(self, ch, reduction=8):
         super().__init__()
@@ -174,7 +183,7 @@ BASE_CH = 32
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ─────────────────────────────────────────────────────────────
-# CHARGER LE MODÈLE
+# CHARGER LE MODÈLE (avec fallback si fichier corrompu)
 # ─────────────────────────────────────────────────────────────
 def charger_modele():
     p = Path(MODEL_PTH)
@@ -183,6 +192,7 @@ def charger_modele():
         return None, 0, 0, 0
 
     try:
+        # Essayer de charger
         state = torch.load(str(p), map_location="cpu", weights_only=False)
         sd = state.get("model_state", state.get("net", state))
         if sd and next(iter(sd)).startswith("module."):
@@ -203,6 +213,25 @@ def charger_modele():
         return model, ep, psnr, ssim
     except Exception as e:
         print(f"❌ Erreur chargement: {e}")
+        # Si le fichier est corrompu, le supprimer et re-télécharger
+        if os.path.exists(MODEL_PTH):
+            print("🔄 Fichier corrompu, suppression...")
+            os.remove(MODEL_PTH)
+            download_model()
+            # Réessayer une fois
+            if os.path.exists(MODEL_PTH):
+                state = torch.load(str(p), map_location="cpu", weights_only=False)
+                sd = state.get("model_state", state.get("net", state))
+                if sd and next(iter(sd)).startswith("module."):
+                    sd = {k[7:]: v for k, v in sd.items()}
+                model = DocumentDenoiser(base_ch=BASE_CH)
+                model.load_state_dict(sd, strict=False)
+                model.eval()
+                ep = state.get("epoch", 20)
+                psnr = state.get("psnr", 30.13)
+                ssim = state.get("ssim", 0.9295)
+                print(f"✅ Modèle chargé (2ème tentative)")
+                return model, ep, psnr, ssim
         return None, 0, 0, 0
 
 MODEL, EPOCH, PSNR_V, SSIM_V = charger_modele()
