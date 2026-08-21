@@ -1,23 +1,29 @@
-FROM python:3.10-slim
+---
+title: Smart Scanner API
+emoji: 📄
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_file: app.py
+pinned: false
+python_version: "3.10"
+---
 
-# Installer Git LFS et dépendances système
-RUN apt-get update && \
-    apt-get install -y git git-lfs && \
-    git lfs install && \
-    rm -rf /var/lib/apt/lists/*
+# Smart Scanner API
 
-WORKDIR /app
+API de débruitage de documents avec U-Net (PSNR 30.13 dB, SSIM 0.9295)
 
-# Copier et installer les dépendances
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+## Performance
+- PSNR : 30.13 dB
+- SSIM : 0.9295
+- Epoch : 20
 
-# Copier tous les fichiers (y compris best_model.pth via LFS)
-COPY . .
+## Endpoints
+- `GET /` — Health check
+- `POST /full-process` — Débruitage (compatible Flutter)
+- `POST /denoise` — Alias
 
-# Port exposé (Railway utilise la variable PORT)
-EXPOSE 8000
-
-# Lancement avec PORT dynamique
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+## Utilisation Flutter
+```dart
+static const String baseUrl = 'https://smart-scanner-api.up.railway.app';
+```
