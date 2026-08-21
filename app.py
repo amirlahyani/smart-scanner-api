@@ -17,11 +17,12 @@ import uvicorn
 import requests
 import time
 
-# ── TÉLÉCHARGER LE MODÈLE ──────────────────────────────────
+# ── TÉLÉCHARGER LE MODÈLE DEPUIS GOOGLE DRIVE ──────────────
 MODEL_PTH = "ep0020_psnr30.13_ssim0.9295.pth"
+GOOGLE_DRIVE_ID = "1EDzgmyQuYzC7VbbSCHyb0zT0wP0Bl1Jz"  # ✅ VOTRE ID
 
 def download_model():
-    """Télécharge le modèle depuis Hugging Face (plus fiable que GitHub)"""
+    """Télécharge le modèle depuis Google Drive"""
     if os.path.exists(MODEL_PTH):
         size = os.path.getsize(MODEL_PTH)
         if size > 80000000:  # 80 MB
@@ -31,49 +32,52 @@ def download_model():
             print(f"⚠️ Fichier corrompu ({size/1024/1024:.1f} MB), re-téléchargement...")
             os.remove(MODEL_PTH)
     
-    print("📥 Téléchargement du modèle depuis Hugging Face...")
+    print("📥 Téléchargement du modèle depuis Google Drive...")
     
-    # ✅ Utiliser Hugging Face (plus fiable que GitHub LFS)
-    urls = [
-        "https://huggingface.co/mohamedamirlehyani/smart-scanner-api/resolve/main/ep0020_psnr30.13_ssim0.9295.pth",
-        "https://raw.githubusercontent.com/amirlahyani/smart-scanner-api/main/ep0020_psnr30.13_ssim0.9295.pth"
-    ]
+    # ✅ URL de téléchargement direct Google Drive
+    url = f"https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_ID}"
     
-    for url in urls:
-        try:
-            print(f"   Tentative: {url[:50]}...")
-            response = requests.get(url, stream=True, timeout=300)
-            response.raise_for_status()
+    try:
+        # Premier téléchargement
+        response = requests.get(url, stream=True, timeout=300)
+        
+        # Si Google Drive demande une confirmation (fichier > 100 MB)
+        if "confirm" in response.text and "download_warning" in response.url:
+            print("   🔄 Confirmation Google Drive...")
+            # Extraire le token de confirmation
+            import re
+            confirm_match = re.search(r'confirm=([^&]+)', response.text)
+            if confirm_match:
+                confirm_token = confirm_match.group(1)
+                url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={GOOGLE_DRIVE_ID}"
+                response = requests.get(url, stream=True, timeout=300)
+        
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        if total_size > 0:
+            print(f"   Taille totale: {total_size/1024/1024:.1f} MB")
+        
+        downloaded = 0
+        with open(MODEL_PTH, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        if int(percent) % 10 == 0:
+                            print(f"   Téléchargement: {percent:.0f}%")
+        
+        size_mb = os.path.getsize(MODEL_PTH) / 1024 / 1024
+        if size_mb > 80:
+            print(f"✅ Modèle téléchargé ({size_mb:.1f} MB)")
+        else:
+            print(f"❌ Fichier trop petit ({size_mb:.1f} MB)")
+            os.remove(MODEL_PTH)
             
-            total_size = int(response.headers.get('content-length', 0))
-            if total_size < 80000000:  # Moins de 80 MB
-                print(f"   ⚠️ Taille suspecte: {total_size/1024/1024:.1f} MB")
-                continue
-            
-            downloaded = 0
-            with open(MODEL_PTH, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            percent = (downloaded / total_size) * 100
-                            if int(percent) % 10 == 0:
-                                print(f"   Téléchargement: {percent:.0f}%")
-            
-            size_mb = os.path.getsize(MODEL_PTH) / 1024 / 1024
-            if size_mb > 80:
-                print(f"✅ Modèle téléchargé ({size_mb:.1f} MB)")
-                return
-            else:
-                print(f"❌ Fichier trop petit ({size_mb:.1f} MB)")
-                os.remove(MODEL_PTH)
-                
-        except Exception as e:
-            print(f"   ❌ Erreur: {e}")
-            continue
-    
-    print("❌ Échec du téléchargement du modèle")
+    except Exception as e:
+        print(f"❌ Erreur téléchargement: {e}")
 
 # Télécharger le modèle au démarrage
 download_model()
@@ -192,7 +196,6 @@ def charger_modele():
         return None, 0, 0, 0
 
     try:
-        # Essayer de charger
         state = torch.load(str(p), map_location="cpu", weights_only=False)
         sd = state.get("model_state", state.get("net", state))
         if sd and next(iter(sd)).startswith("module."):
@@ -213,12 +216,10 @@ def charger_modele():
         return model, ep, psnr, ssim
     except Exception as e:
         print(f"❌ Erreur chargement: {e}")
-        # Si le fichier est corrompu, le supprimer et re-télécharger
         if os.path.exists(MODEL_PTH):
             print("🔄 Fichier corrompu, suppression...")
             os.remove(MODEL_PTH)
             download_model()
-            # Réessayer une fois
             if os.path.exists(MODEL_PTH):
                 state = torch.load(str(p), map_location="cpu", weights_only=False)
                 sd = state.get("model_state", state.get("net", state))
@@ -249,7 +250,6 @@ TFM = transforms.Compose([
 # FONCTION DE DÉBRUITAGE
 # ─────────────────────────────────────────────────────────────
 def denoise_image(image_bytes):
-    """Débruite une image depuis des bytes"""
     try:
         img_pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except:
