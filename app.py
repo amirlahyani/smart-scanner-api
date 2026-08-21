@@ -44,19 +44,16 @@ logger.info("Device : {}".format(device))
 #  TÉLÉCHARGER LE MODÈLE DEPUIS HUGGING FACE
 # ─────────────────────────────────────────────────────────────
 def download_model():
-    """Télécharge le modèle depuis Hugging Face"""
     if os.path.exists(MODEL_PTH):
         size = os.path.getsize(MODEL_PTH)
-        if size > 80000000:  # 80 MB
+        if size > 80000000:
             logger.info(f"✅ Modèle déjà présent ({size/1024/1024:.1f} MB)")
             return
         else:
-            logger.warning(f"⚠️ Fichier corrompu ({size/1024/1024:.1f} MB), re-téléchargement...")
+            logger.warning(f"⚠️ Fichier corrompu, re-téléchargement...")
             os.remove(MODEL_PTH)
 
     logger.info("📥 Téléchargement du modèle depuis Hugging Face...")
-    
-    # ✅ LIEN HUGGING FACE
     url = "https://huggingface.co/mohamedamirlehyani/smart-scanner-model/resolve/main/ep0020_psnr30.13_ssim0.9295.pth"
 
     try:
@@ -64,31 +61,23 @@ def download_model():
         response.raise_for_status()
 
         total_size = int(response.headers.get('content-length', 0))
-        if total_size > 0:
-            logger.info(f"   Taille totale: {total_size/1024/1024:.1f} MB")
+        logger.info(f"   Taille: {total_size/1024/1024:.1f} MB")
 
-        downloaded = 0
         with open(MODEL_PTH, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        if int(percent) % 10 == 0:
-                            logger.info(f"   Téléchargement: {percent:.0f}%")
 
         size_mb = os.path.getsize(MODEL_PTH) / 1024 / 1024
         if size_mb > 80:
             logger.info(f"✅ Modèle téléchargé ({size_mb:.1f} MB)")
         else:
-            logger.error(f"❌ Fichier trop petit ({size_mb:.1f} MB)")
+            logger.error(f"❌ Fichier trop petit")
             os.remove(MODEL_PTH)
 
     except Exception as e:
         logger.error(f"❌ Erreur téléchargement: {e}")
 
-# Télécharger le modèle au démarrage
 download_model()
 
 # ─────────────────────────────────────────────────────────────
@@ -187,15 +176,12 @@ def pil_to_base64(pil_img: Image.Image) -> str:
 # ─────────────────────────────────────────────────────────────
 @app.get("/")
 async def health_check():
-    """Health check — Railway vérifie cet endpoint."""
     return {
         "status": "ok",
         "service": "Smart Scanner API",
-        "model": "DocumentDenoiser U-Net",
         "epoch": EPOCH_VAL,
         "psnr": PSNR_VAL,
         "ssim": SSIM_VAL,
-        "device": str(device),
         "model_loaded": MODEL is not None
     }
 
@@ -205,55 +191,42 @@ async def health():
 
 @app.post("/full-process")
 async def full_process(file: UploadFile = File(...)):
-    """
-    Endpoint principal — compatible Flutter/Dart.
-    Reçoit une image, retourne l'image débruitée en base64.
-    """
     if MODEL is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Modèle non chargé"
-        )
+        raise HTTPException(status_code=503, detail="Modèle non chargé")
 
     try:
         contents = await file.read()
         pil_img = Image.open(io.BytesIO(contents)).convert("RGB")
         w, h = pil_img.size
-        logger.info(f"Image reçue : {w}×{h} — {file.filename}")
+        logger.info(f"Image reçue : {w}×{h}")
 
         debruitee = debruiter_pil(pil_img)
         img_b64 = pil_to_base64(debruitee)
 
-        return JSONResponse(content={
+        return JSONResponse({
             "success": True,
             "enhanced_image": img_b64,
             "analysis": {
                 "model_epoch": str(EPOCH_VAL),
                 "model_psnr": f"{PSNR_VAL:.2f} dB",
-                "model_ssim": f"{SSIM_VAL:.4f}",
-                "summary": f"Débruitage terminé | Epoch {EPOCH_VAL} | PSNR={PSNR_VAL:.2f} dB"
+                "model_ssim": f"{SSIM_VAL:.4f}"
             }
         })
 
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": str(e)
-            }
-        )
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 # ─────────────────────────────────────────────────────────────
 #  LANCEMENT — PORT DYNAMIQUE RAILWAY
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Démarrage sur port {port}")
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Démarrage sur le port {port}")
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
         port=port,
-        reload=False
+        reload=False,
+        log_level="info"
     )
